@@ -17,6 +17,15 @@ struct ContentView: View {
     @State private var currentVideoURL: URL?
     @State private var loadErrorMessage: String?
     @State private var isDragging = false
+    @State private var useCompressed: Bool = false
+    
+    // 根据是否使用压缩版本来决定显示的缩略图
+    private var displayThumbnails: [NSImage] {
+        if useCompressed && !videoProcessor.compressedThumbnails.isEmpty {
+            return videoProcessor.compressedThumbnails
+        }
+        return videoProcessor.generatedThumbnails
+    }
     
     var body: some View {
         HSplitView {
@@ -106,6 +115,7 @@ struct ContentView: View {
                     Button("智能生成封面") {
                         Task {
                             await generateSmartThumbnail()
+                            useCompressed = false
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -115,6 +125,7 @@ struct ContentView: View {
                     Button("截取首帧") {
                         Task {
                             await generateFirstFrame()
+                            useCompressed = false
                         }
                     }
                     .buttonStyle(.bordered)
@@ -130,6 +141,7 @@ struct ContentView: View {
                     Button("生成随机封面") {
                         Task {
                             await generateRandomFrames()
+                            useCompressed = false
                         }
                     }
                     .buttonStyle(.bordered)
@@ -137,6 +149,27 @@ struct ContentView: View {
                     .disabled(currentVideoURL == nil || videoProcessor.isProcessing)
                     
                     if !videoProcessor.generatedThumbnails.isEmpty {
+                        // 压缩质量设置
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("压缩质量")
+                                Spacer()
+                                Text("\(Int(videoProcessor.compressionQuality * 100))%")
+                                    .foregroundColor(.secondary)
+                            }
+                            Slider(value: $videoProcessor.compressionQuality, in: 0.1...1.0, step: 0.1)
+                        }
+                        
+                        Button("压缩所有封面") {
+                            Task {
+                                await videoProcessor.compressAllThumbnails()
+                                useCompressed = true
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
+                        .disabled(videoProcessor.isProcessing)
+                        
                         Button("下载所有封面") {
                             videoProcessor.saveAllImages()
                         }
@@ -161,7 +194,7 @@ struct ContentView: View {
                 // 生成的封面展示
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 150))], spacing: 16) {
-                        ForEach(Array(videoProcessor.generatedThumbnails.enumerated()), id: \.offset) { index, image in
+                        ForEach(Array(displayThumbnails.enumerated()), id: \.offset) { index, image in
                             VStack {
                                 Image(nsImage: image)
                                     .resizable()
@@ -169,6 +202,12 @@ struct ContentView: View {
                                     .frame(width: 150, height: 150)
                                     .cornerRadius(8)
                                     .shadow(radius: 4)
+                                
+                                if useCompressed && !videoProcessor.compressedThumbnails.isEmpty {
+                                    Text("已压缩")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
                                 
                                 Button("下载") {
                                     videoProcessor.saveImage(image, withName: "thumbnail_\(index + 1).png")

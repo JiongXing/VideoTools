@@ -13,8 +13,10 @@ import UniformTypeIdentifiers
 
 class VideoProcessor: ObservableObject {
     @Published var generatedThumbnails: [NSImage] = []
+    @Published var compressedThumbnails: [NSImage] = []
     @Published var isProcessing = false
     @Published var errorMessage: String?
+    @Published var compressionQuality: Double = 0.8
     
     private var asset: AVAsset?
     
@@ -214,10 +216,95 @@ class VideoProcessor: ObservableObject {
     }
     
     func saveAllImages() {
-        for (index, image) in generatedThumbnails.enumerated() {
+        let imagesToSave = compressedThumbnails.isEmpty ? generatedThumbnails : compressedThumbnails
+        for (index, image) in imagesToSave.enumerated() {
             let name = "thumbnail_\(index + 1).png"
             saveImage(image, withName: name)
         }
+    }
+    
+    // 压缩单个图片（实例方法，调用静态方法）
+    func compressImage(_ image: NSImage, quality: Double) -> NSImage? {
+        return VideoProcessor.compressImageStatic(image, quality: quality)
+    }
+    
+    // 压缩所有生成的封面
+    func compressAllThumbnails() async {
+        await MainActor.run {
+            isProcessing = true
+            errorMessage = nil
+        }
+        
+        let thumbnails = await MainActor.run {
+            Array(generatedThumbnails)
+        }
+        let quality = await MainActor.run {
+            compressionQuality
+        }
+        
+        // 在后台线程进行压缩处理
+        let compressed: [NSImage] = await Task.detached { [thumbnails, quality] in
+            var result: [NSImage] = []
+            for image in thumbnails {
+                // 创建压缩函数，不捕获 self
+                if let compressedImage = VideoProcessor.compressImageStatic(image, quality: quality) {
+                    result.append(compressedImage)
+                } else {
+                    // 如果压缩失败，使用原图
+                    result.append(image)
+                }
+            }
+            return result
+        }.value
+        
+        await MainActor.run {
+            compressedThumbnails = compressed
+            isProcessing = false
+        }
+    }
+    
+    // 静态压缩方法，用于在后台线程调用
+    private static func compressImageStatic(_ image: NSImage, quality: Double) -> NSImage? {
+        guard let tiffData = image.tiffRepresentation,
+              NSBitmapImageRep(data: tiffData) != nil else {
+            return nil
+        }
+        
+        // 计算压缩后的尺寸（保持宽高比，最大宽度或高度为 1920）
+        let maxDimension: CGFloat = 1920
+        var newSize = image.size
+        
+        if newSize.width > maxDimension || newSize.height > maxDimension {
+            let aspectRatio = newSize.width / newSize.height
+            if newSize.width > newSize.height {
+                newSize = NSSize(width: maxDimension, height: maxDimension / aspectRatio)
+            } else {
+                newSize = NSSize(width: maxDimension * aspectRatio, height: maxDimension)
+            }
+        }
+        
+        // 调整图片尺寸
+        let resizedImage = NSImage(size: newSize)
+        resizedImage.lockFocus()
+        image.draw(in: NSRect(origin: .zero, size: newSize),
+                   from: NSRect(origin: .zero, size: image.size),
+                   operation: .copy,
+                   fraction: 1.0)
+        resizedImage.unlockFocus()
+        
+        // 转换为 JPEG 格式进行压缩
+        guard let resizedTiff = resizedImage.tiffRepresentation,
+              let resizedBitmap = NSBitmapImageRep(data: resizedTiff),
+              let jpegData = resizedBitmap.representation(using: .jpeg, properties: [.compressionFactor: quality]) else {
+            return resizedImage
+        }
+        
+        // 将压缩后的 JPEG 数据转换回 NSImage
+        guard let compressedImage = NSImage(data: jpegData) else {
+            return resizedImage
+        }
+        
+        return compressedImage
     }
 }
 
